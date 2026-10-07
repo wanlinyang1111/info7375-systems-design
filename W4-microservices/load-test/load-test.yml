@@ -1,0 +1,70 @@
+# INFO7375 Week 4 - Artillery Load Test
+# -------------------------------------
+# Same scenarios as Week 3 - intentional.
+# Direct comparison of monolith vs microservices under identical load.
+#
+# Before running:
+#   Replace PUBLIC_ALB_DNS_HERE with PublicAlbDns output from cdk deploy
+#   Update payload.csv path - reuse the one from Week 3 (same DB schema)
+#
+# Run:
+#   artillery run load-test.yml --output baseline.json
+#   artillery report baseline.json
+
+config:
+  target: "http://Week4M-Publi-2BDJc2M6x7Ju-1669589483.us-east-1.elb.amazonaws.com"
+  phases:
+    - name: "Warm-up"
+      duration: 60
+      arrivalRate: 10
+    - name: "Ramp"
+      duration: 120
+      arrivalRate: 10
+      rampTo: 100
+    - name: "Peak load"
+      duration: 300
+      arrivalRate: 100
+    - name: "Ramp down"
+      duration: 60
+      arrivalRate: 100
+      rampTo: 5
+  payload:
+    path: "./payload.csv"
+    fields:
+      - "user_id"
+      - "product_id"
+
+scenarios:
+  - name: "Browse products"
+    weight: 70
+    flow:
+      - get:
+          url: "/products/"
+      - get:
+          url: "/products/?offset=20"
+      - get:
+          url: "/products/?offset=40"
+
+  - name: "Get single product"
+    weight: 10
+    flow:
+      - get:
+          url: "/products/{{ product_id }}"
+
+  - name: "Place order"
+    weight: 18
+    flow:
+      - post:
+          url: "/orders/"
+          json:
+            user_id: "{{ user_id }}"
+            items:
+              - product_id: "{{ product_id }}"
+                quantity: 1
+            shipping_method: "flat_rate"
+
+  - name: "Health check"
+    weight: 2
+    flow:
+      - get:
+          url: "/health"

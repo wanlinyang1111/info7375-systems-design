@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# CDK
+cdk.out/
+*.js
+*.d.ts
+node_modules/
+
+# macOS
+.DS_Store
+
+# env / secrets
+.env
+*.env
+
+# IDEs
+.vscode/
+.idea/
+
+# Large binaries
+*.pkg
+*.zip

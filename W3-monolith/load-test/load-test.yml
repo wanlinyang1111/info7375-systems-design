@@ -1,0 +1,108 @@
+# Info7375 Week 3 - Artillery Load Test
+# -------------------------------------
+# Before running:
+#   1. Replace Week3M-Monol-gIorxnlmw9Qr-1550656973.us-east-1.elb.amazonaws.com with the AlbDns output from cdk deploy
+#   2. Run the seed script so product/user IDs exist
+#   3. Generate payload.csv with real user_id / product_id values:
+#        python3 scripts/gen_payload.py > load-test/payload.csv
+#.  To Export a real user_id: 
+#.     USER_ID=$(psql $DATABASE_URL -t -c "SELECT id FROM users LIMIT 1")
+#.  Actually, as written, this file doesn't use $USER_ID or $PRODUCT_ID environment 
+#.     variables anywhere. Here's why: the scenarios reference {{ user_id }} and 
+# .    {{ product_id }} (no $ prefix), which in Artillery pulls from the CSV payload, 
+#.     not environment variables. If Artillery template syntax used environment 
+#.     variables instead, it would look like {{ $processEnvironment.USER_ID }} - that 
+#.     pattern doesn't appear here. Good to know
+#
+# Run:
+#   artillery run load-test.yml
+#   artillery run load-test.yml --output results.json  # save for writeup
+#   artillery report results.json                       # HTML report
+
+config:
+  target: "http://Week3M-Monol-gIorxnlmw9Qr-1550656973.us-east-1.elb.amazonaws.com"
+  phases:
+    # Phase 1: warm up cache and establish baseline
+    - name: "Warm-up"
+      duration: 60
+      arrivalRate: 10
+
+    # Phase 2: ramp - watch cache_hit_rate climb in /health
+    - name: "Ramp"
+      duration: 120
+      arrivalRate: 10
+      rampTo: 100
+
+    # Phase 3: hold at peak - this is where Break scenarios start
+    - name: "Peak load"
+      duration: 300
+      arrivalRate: 100
+
+    # Phase 4: ramp down
+    - name: "Ramp down"
+      duration: 60
+      arrivalRate: 100
+      rampTo: 5
+
+  payload:
+    # Provide a CSV with real user_ids and product_ids from your DB
+    # Generate: python3 scripts/gen_payload.py > load-test/payload.csv
+    path: "./payload.csv"
+    fields:
+      - "user_id"
+      - "product_id"
+
+  defaults:
+    headers:
+      Content-Type: "application/json"
+
+  # Thresholds - test fails if these are breached
+  ensure:
+    p99: 300          # p99 must stay under 300ms
+    maxErrorRate: 1   # error rate must stay under 1%
+
+scenarios:
+  # 70% reads - product catalog (cache-fronted)
+  - name: "Browse products"
+    weight: 70
+    flow:
+      - get:
+          # FIX: was $randomInt, which isn't supported in all Artillery
+          # versions. $randomNumber is universally supported and was
+          # left unresolved as a literal string, producing a malformed
+          # URL (hence "Invalid URL - undefined").
+          url: "/products/?limit=20&offset={{ $randomNumber(0, 45) }}"
+          expect:
+            - statusCode: 200
+
+  - name: "Get single product"
+    weight: 10
+    flow:
+      - get:
+          url: "/products/{{ product_id }}"
+          expect:
+            - statusCode: 200
+
+  # 20% writes - order creation (hits DB + both strategies)
+  - name: "Place order"
+    weight: 18
+    flow:
+      - post:
+          url: "/orders/"
+          json:
+            user_id: "{{ user_id }}"
+            items:
+              - product_id: "{{ product_id }}"
+                quantity: 1
+            shipping_method: "flat_rate"
+          expect:
+            - statusCode: 201
+
+  # Always-on: health check poll (simulates monitoring)
+  - name: "Health check"
+    weight: 2
+    flow:
+      - get:
+          url: "/health"
+          expect:
+            - statusCode: 200
