@@ -311,13 +311,14 @@ async def create_order(request: Request, db: Session = Depends(get_db)):
     import uuid
     order_id = str(uuid.uuid4())
     try:
-        ship_resp = httpx.post(
-            f"{SHIPPING_SERVICE_URL}/quote",
-            json={"weight_kg": total_weight,
-                  "item_count": len(line_items),
-                  "method": shipping},
-            timeout=SHIPPING_TIMEOUT_S,
-        )
+        async with httpx.AsyncClient() as client:
+            ship_resp = await client.post(
+                f"{SHIPPING_SERVICE_URL}/quote",
+                json={"weight_kg": total_weight,
+                      "item_count": len(line_items),
+                      "method": shipping},
+                timeout=SHIPPING_TIMEOUT_S,
+            )
         ship_resp.raise_for_status()
         quote = ship_resp.json()
     except httpx.TimeoutException:
@@ -333,13 +334,14 @@ async def create_order(request: Request, db: Session = Depends(get_db)):
 
     # -- Call PaymentService (network - was PaymentStrategy.process()) ------
     try:
-        pay_resp = httpx.post(
-            f"{PAYMENT_SERVICE_URL}/charge",
-            json={"amount": total_amount,
-                  "card_token": card,
-                  "order_id": order_id},
-            timeout=PAYMENT_TIMEOUT_S,
-        )
+        async with httpx.AsyncClient() as client:
+            pay_resp = await client.post(
+                f"{PAYMENT_SERVICE_URL}/charge",
+                json={"amount": total_amount,
+                      "card_token": card,
+                      "order_id": order_id},
+                timeout=PAYMENT_TIMEOUT_S,
+            )
     except httpx.TimeoutException:
         log.error("payment_service_timeout", extra={"order_id": order_id})
         raise HTTPException(status_code=504,

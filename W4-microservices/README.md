@@ -58,6 +58,54 @@ Distributed tracing: AWS X-Ray daemon sidecar in every task.
 - **Scenario D:** Fast HTTP 402 failures resolve in ~170 ms vs ~2,000 ms for successful orders. The p99 *drops* compared to baseline (5,272 ms vs 5,711 ms) because failed payments reduce the slow-request queue. Lower p99 ≠ healthier system — 1,184 orders failed.
 - **Connection pools:** Each service owns its pool. A blocked ShippingService connection cannot starve product catalog queries — the key isolation that W3 lacked.
 
+## HW4 Redo — Async Fix for Scenario C
+
+**Instructor feedback:** Scenario C revealed a hidden defect — `httpx.post()` (synchronous) inside `async def create_order()` freezes the entire event loop for 3 seconds per order. GET /products/ cannot be served during that freeze, breaking the containment guarantee.
+
+### Root Cause
+
+FastAPI + uvicorn runs a single-threaded event loop. Calling synchronous `httpx.post()` inside `async def` blocks the loop — no other coroutine can run until the call returns.
+
+```python
+# BEFORE — blocks event loop for full shipping latency (3 s)
+ship_resp = httpx.post(f"{SHIPPING_SERVICE_URL}/quote", ...)
+
+# AFTER — yields event loop; other requests served between awaits
+async with httpx.AsyncClient() as client:
+    ship_resp = await client.post(f"{SHIPPING_SERVICE_URL}/quote", ...)
+```
+
+The same change was applied to the PaymentService call.
+
+### Containment Test (load-test-containment.yml)
+
+Run at **20 arr/s** (not 100) so event loop behaviour is the isolated variable:
+
+| Phase | Duration | Rate |
+|-------|----------|------|
+| Warm-up | 60 s | 5 arr/s |
+| Ramp | 120 s | 5 → 20 arr/s |
+| Peak | 300 s | 20 arr/s |
+| Ramp down | 60 s | 20 → 5 arr/s |
+
+Environment: `SHIPPING_LATENCY_MS=3000`, `SHIPPING_TIMEOUT_S=10.0`, `PAYMENT_STUB_FAIL_RATE=0`
+
+### Before vs. After Results
+
+| Metric | Before — Scenario C (sync) | After — Async Fix |
+|--------|---------------------------|-------------------|
+| Load | 100 arr/s | 20 arr/s |
+| Overall median latency | **3,072 ms** | **22.9 ms** |
+| Overall p99 | 8,025 ms | 153 ms |
+| Socket timeouts | **39,871** | **1,536** (−96%) |
+| VU completion rate | 1.2% (479 / 40,350) | 82% (7,014 / 8,550) |
+| GET /products/ behaviour | Frozen with orders (3 s+ median) | **Unaffected: 22 ms median** |
+| GET /products/ responses | 1,601 | 18,913 |
+
+**Key result:** Median latency dropped from 3,072 ms → 22.9 ms. GET /products/ returned to its natural speed (22 ms) and remained completely decoupled from the 3-second ShippingService degradation. Blast radius is now genuinely contained at the application level.
+
+The remaining 1,536 timeouts are caused by ShippingService serialising concurrent requests (`time.sleep` is intentional — it simulates a slow external dependency). That is a ShippingService capacity constraint, not an OrderService event loop problem.
+
 ## Infrastructure
 
 | Resource | Detail |

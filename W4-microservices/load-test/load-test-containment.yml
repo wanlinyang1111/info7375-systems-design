@@ -1,0 +1,73 @@
+# INFO7375 Week 4 - Artillery Containment Load Test (Async Fix)
+# -------------------------------------------------------------
+# PURPOSE: Demonstrate blast radius CONTAINMENT after async fix.
+# SHIPPING_LATENCY_MS=3000, SHIPPING_TIMEOUT_S=10.0, PAYMENT_STUB_FAIL_RATE=0
+#
+# At 20 arr/s the math works:
+#   20 req/s x 18% orders = ~3.6 orders/second
+#   Each order holds a connection for ~3s (shipping latency)
+#   ~3.6 x 3s = ~11 concurrent connections — well within pool_size=20
+#
+# Expected result (async fix working):
+#   GET /products -> ~20ms, 200, unaffected throughout
+#   POST /orders  -> ~3s per order (shipping latency), but no socket timeouts
+#   Blast radius IS contained — products keep serving while orders wait
+
+config:
+  target: "http://Week4M-Publi-RO75ZhwppyK5-1967367437.us-east-1.elb.amazonaws.com"
+  phases:
+    - name: "Warm-up"
+      duration: 60
+      arrivalRate: 5
+    - name: "Ramp"
+      duration: 120
+      arrivalRate: 5
+      rampTo: 20
+    - name: "Peak load"
+      duration: 300
+      arrivalRate: 20
+    - name: "Ramp down"
+      duration: 60
+      arrivalRate: 20
+      rampTo: 5
+
+  payload:
+    path: "./payload.csv"
+    fields:
+      - "user_id"
+      - "product_id"
+
+scenarios:
+  - name: "Browse products"
+    weight: 70
+    flow:
+      - get:
+          url: "/products/"
+      - get:
+          url: "/products/?offset=20"
+      - get:
+          url: "/products/?offset=40"
+
+  - name: "Get single product"
+    weight: 10
+    flow:
+      - get:
+          url: "/products/{{ product_id }}"
+
+  - name: "Place order"
+    weight: 18
+    flow:
+      - post:
+          url: "/orders/"
+          json:
+            user_id: "{{ user_id }}"
+            items:
+              - product_id: "{{ product_id }}"
+                quantity: 1
+            shipping_method: "flat_rate"
+
+  - name: "Health check"
+    weight: 2
+    flow:
+      - get:
+          url: "/health"
